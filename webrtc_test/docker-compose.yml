@@ -1,0 +1,22 @@
+version: '3'
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"  # Maps to localhost:3000
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+  backend:
+    build: ./backend
+    ports:
+      - "8080:8080"  # Maps to localhost:8080
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+
