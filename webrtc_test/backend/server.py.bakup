@@ -1,0 +1,69 @@
+import asyncio
+import cv2
+import json
+from aiohttp import web
+from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from aiortc.mediastreams import VideoFrame
+import numpy as np
+
+# Create a video track from a static image
+class StaticImageStreamTrack(VideoStreamTrack):
+    def __init__(self, image_path):
+        super().__init__()
+        # Load the image using OpenCV
+        self.image = cv2.imread(image_path)
+        if self.image is None:
+            raise ValueError("Could not load image")
+        # Convert the image from BGR to RGB format
+        self.image = cv2.cvtColor(self.image, cv2.COLOR_BGR2RGB)
+        self.frame = VideoFrame.from_ndarray(self.image, format="rgb24")
+
+    async def recv(self):
+        pts, time_base = await self.next_timestamp()
+        self.frame.pts = pts
+        self.frame.time_base = time_base
+        return self.frame
+
+async def index(request):
+    content = open('index.html', 'r').read()
+    return web.Response(content_type='text/html', text=content)
+
+async def offer(request):
+    params = await request.json()
+    offer = RTCSessionDescription(sdp=params['sdp'], type=params['type'])
+    
+    pc = RTCPeerConnection()
+    pcs.add(pc)
+
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange():
+        if pc.connectionState == "failed":
+            await pc.close()
+            pcs.discard(pc)
+
+    # Add the static image track
+    pc.addTrack(StaticImageStreamTrack("dummy_image.jpg"))  # Specify your image file here
+
+    await pc.setRemoteDescription(offer)
+    answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}),
+    )
+
+async def cleanup():
+    # Cleanup peer connections
+    for pc in pcs:
+        await pc.close()
+    pcs.clear()
+
+pcs = set()
+app = web.Application()
+app.on_shutdown.append(cleanup)
+app.router.add_get("/", index)
+app.router.add_post("/offer", offer)
+
+web.run_app(app, port=8080)
+

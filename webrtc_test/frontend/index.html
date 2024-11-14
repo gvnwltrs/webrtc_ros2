@@ -7,22 +7,70 @@
     <h1>WebRTC Video Stream Test</h1>
     <video id="remoteVideo" autoplay playsinline></video>
     <script>
+        // WebRTC CALLER
         const signalingUrl = 'http://localhost:8080/offer'; // Adjust if necessary
 
+        function prettyPrintSDP(sdp) {
+          // Split SDP into lines and print each line for clarity
+          console.log('--- SDP Start ---');
+          sdp.split('\r\n').forEach((line) => {
+              if (line.trim() !== '') {
+                  console.log(line);
+              }
+          });
+          console.log('--- SDP End ---');
+        }
+
+        const pc = new RTCPeerConnection({ 
+          iceServers: [],
+          iceTransportPolicy: 'relay' // Forces no direct connections; change as needed to disable ICE entirely
+        }); // empty list since NAT traversal not needed
+        //const pc = new RTCPeerConnection({ iceServers: [{urls: 'stun:stun.l.google.com:19302' }] }); // empty list since NAT traversal not needed
+
+          pc.ontrack = (event) => {
+              console.log('Received track:', event);
+              const video = document.getElementById('remoteVideo');
+              video.srcObject = event.streams[0];
+          };
+
         async function startWebRTC() {
-            const pc = new RTCPeerConnection();
 
-            pc.ontrack = (event) => {
-                const video = document.getElementById('remoteVideo');
-                if (video.srcObject !== event.streams[0]) {
-                    video.srcObject = event.streams[0];
-                }
+            // Get a video stream and add the tracks to the PeerConnection
+          //  try {
+          //      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          //      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+          //  } catch (err) {
+          //      console.error('Error accessing media devices.', err);
+          //      return;
+          //  }
+
+            // Add a transceiver with direction set to "recvonly" to indicate the desire to receive a video stream
+            pc.addTransceiver('video', { direction: 'recvonly' });
+
+            const offerOptions = {
+              offerToReceiveAudio: false,
+              offerToReceiveVideo: true
             };
+            const offer = await pc.createOffer(offerOptions); // Create offer to server
+            console.log('Offer Created: ', offer)
 
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
+            // Optionally modify the SDP to reduce codec complexity
+           // let modifiedSDP = offer.sdp.split('\r\n').filter(line => !line.includes('H264')).join('\r\n');
+           // const newOffer = new RTCSessionDescription({
+           //     sdp: modifiedSDP,
+           //     type: offer.type
+           // });
 
-            const response = await fetch(signalingUrl, {
+           // await pc.setLocalDescription(newOffer);
+
+            try {
+              await pc.setLocalDescription(offer); // set offer 
+            } catch (error) {
+                console.error('Error setting local description: ', error);
+            }
+
+            prettyPrintSDP(pc.localDescription.sdp);
+            const response = await fetch(signalingUrl, { // send the offer to establish connection
                 method: 'POST',
                 body: JSON.stringify({
                     sdp: pc.localDescription.sdp,
@@ -31,8 +79,20 @@
                 headers: { 'Content-Type': 'application/json' },
             });
 
-            const answer = await response.json();
-            await pc.setRemoteDescription(new RTCSessionDescription(answer));
+            if(!response.ok) {
+              throw new Error('Network response was not ok')
+            }
+
+            const answer = await response.json(); // await answer from server
+            console.log('Answer received from backend: ', answer)
+            prettyPrintSDP(answer.sdp);
+          
+            await pc.setRemoteDescription(new RTCSessionDescription(answer)); // establish stream 
+            console.log('Local Description Set: ', pc.currentLocalDescription)
+
+            pc.onconnectionstatechange = () => {
+              console.log('Connection state changed:', pc.connectionState);
+            };
         }
 
         startWebRTC();
