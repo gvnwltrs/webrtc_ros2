@@ -2,22 +2,17 @@ version: '3'
 services:
   frontend:
     build: ./frontend
+    network_mode: host
     ports:
       - "3000:3000"  # Maps to localhost:3000
     depends_on:
       - backend
-    networks:
-      - app-network
 
   backend:
     build: ./backend
+    network_mode: host
     ports:
       - "8080:8080"  # Maps to localhost:8080
-    networks:
-      - app-network
-
-networks:
-  app-network:
-    driver: bridge
-
+    command: >
+      sh -c "python /app/signaling_server.py & python /app/video_streamer.py"
 
