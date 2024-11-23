@@ -1,100 +1,188 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebRTC Test</title>
 </head>
 <body>
     <h1>WebRTC Video Stream Test</h1>
     <video id="remoteVideo" autoplay playsinline></video>
     <script>
-        // WebRTC CALLER
-        const signalingUrl = 'http://localhost:8080/offer'; // Adjust if necessary
+        /*
+          states to watch:
+          pc.onicecandidate
+          pc.onicecandidateerror
+          pc.onicecandidatestatechange
+          pc.onicegatheringstatechange
+          pc.onconnectionstatechange
+          pc.ondatachannel
+          pc.onnegotiationneeded
+          pc.onsignalingstatechange
+          pc.ontrack
+        */
 
-        function prettyPrintSDP(sdp) {
-          // Split SDP into lines and print each line for clarity
-          console.log('--- SDP Start ---');
-          sdp.split('\r\n').forEach((line) => {
-              if (line.trim() !== '') {
-                  console.log(line);
-              }
-          });
-          console.log('--- SDP End ---');
+        const offerAnswerStatus = {
+            offerSent: false,
+            answerReceived: false,
+        };
+
+        const configuration = {
+            "iceServers": [], // No STUN or TURN servers
+            "iceTransportPolicy": "all"
+        };
+
+        const iceCandidates = [];
+
+        // Utility Functions
+
+        // FIXME: Broken 
+        function prettyPrintSDP(data, action) {
+          console.log(`--- DATA START --- `);
+          console.log(`--- TYPE: ${action} --- `);
+          if (action == "ice_candidates") {
+            console.log(data);
+          } else if (action == "sdp") {
+              data.split('\r\n').forEach((line) => {
+                  if (line.trim() !== '') {
+                      console.log(line);
+                  }
+              });
+          } else {
+            console.log("Invalid data access: Options are 'sdp' or 'ice_candidates'")
+          }
+          console.log('--- DATA START ---');
         }
 
-        const pc = new RTCPeerConnection({ 
-          iceServers: [],
-          iceTransportPolicy: 'relay' // Forces no direct connections; change as needed to disable ICE entirely
-        }); // empty list since NAT traversal not needed
-        //const pc = new RTCPeerConnection({ iceServers: [{urls: 'stun:stun.l.google.com:19302' }] }); // empty list since NAT traversal not needed
+        function waitForIceGatheringComplete(pc) {
+            return new Promise((resolve) => {
+                if (pc.iceGatheringState === "complete") {
+                    resolve();
+                } else {
+                    const checkState = () => {
+                        if (pc.iceGatheringState === "complete") {
+                            pc.removeEventListener("icegatheringstatechange", checkState);
+                            resolve();
+                        }
+                    };
+                    pc.addEventListener("icegatheringstatechange", checkState);
+                }
+            });
+        }
 
-          pc.ontrack = (event) => {
-              console.log('Received track:', event);
-              const video = document.getElementById('remoteVideo');
-              video.srcObject = event.streams[0];
-          };
+        const pc = new RTCPeerConnection(configuration);
+        const signalingUrl = 'http://localhost:8080';
+        const videoElement = document.getElementById('remoteVideo');
+
+        // Handle incoming video stream
+        pc.ontrack = (event) => {
+            if (event.streams && event.streams[0]) {
+                videoElement.srcObject = event.streams[0];
+            }
+        };
+
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+              console.log(`Generated ICE Candidate: ${event.candidate}`);
+              console.log(`Generated ICE Candidate IP: ${event.candidate.candidate.split(" ")[4]}`);
+              iceCandidates.push(event.candidate); // Add the candidate to the list
+          } else {
+              console.log("All ICE candidates have been gathered for offer.");
+          }
+        }
+
+        async function sendOffer() {
+            if (!offerAnswerStatus.offerSent) {
+                pc.addTransceiver('video', { direction: 'recvonly' });
+
+                // Create the offer and set as local description
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                // Wait for ICE gathering to complete
+                await waitForIceGatheringComplete(pc);
+
+                // Send offer to signaling server
+                await fetch(`${signalingUrl}/frontend/offer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        offer: { sdp: pc.localDescription.sdp, type: pc.localDescription.type },
+                        ice_candidates: iceCandidates.map(candidate => ({
+                            candidate: candidate.candidate,
+                            sdpMid: candidate.sdpMid,
+                            sdpMLineIndex: candidate.sdpMLineIndex
+                        }))
+                    })
+                });
+
+                console.log(`Frontend: Offer sent to signaling server.`);
+                offerAnswerStatus.offerSent = true;
+            }
+           // TODO: return??
+        }
+
+        async function getAnswer() {
+            console.log("RemoteCandidate: ", pc.iceGatheringState)
+            if (!offerAnswerStatus.answerReceived) {
+                const response = await fetch(`${signalingUrl}/frontend/answer`);
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log(`Frontend: Answer received: ${data.answer}`);
+
+                    // Set the remote description with the received answer
+                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    console.log(`Frontend: RemoteDescription added answer`);
+
+                    
+                    // FIXME: Create a loop to add all remote candidates
+                    await pc.addIceCandidate(new RTCIceCandidate(data.ice_candidates[0]));
+                    console.log(`Frontend: Added ICE candidate: ${data.ice_candidates[0]}`);
+
+                    offerAnswerStatus.answerReceived = true;
+                } else {
+                    console.log("Frontend: No answer available yet.");
+                }
+            }
+            //TODO: return ??
+        }
 
         async function startWebRTC() {
+            // TODO: Add conditional here to stop running this upon getting the answer back from peer.
+            await sendOffer();
+            await getAnswer();
 
-            // Get a video stream and add the tracks to the PeerConnection
-          //  try {
-          //      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-          //      stream.getTracks().forEach(track => pc.addTrack(track, stream));
-          //  } catch (err) {
-          //      console.error('Error accessing media devices.', err);
-          //      return;
-          //  }
+            // Periodically check for an answer if not yet received
+            const answerCheckInterval = setInterval(async () => {
+                if (!offerAnswerStatus.answerReceived) {
+                    await getAnswer();
+                } else {
+                    clearInterval(answerCheckInterval);
+                }
+            }, 5000);
 
-            // Add a transceiver with direction set to "recvonly" to indicate the desire to receive a video stream
-            pc.addTransceiver('video', { direction: 'recvonly' });
+            // TODO: On what state should I set remote and ice_candidates from remote???
 
-            const offerOptions = {
-              offerToReceiveAudio: false,
-              offerToReceiveVideo: true
-            };
-            const offer = await pc.createOffer(offerOptions); // Create offer to server
-            console.log('Offer Created: ', offer)
-
-            // Optionally modify the SDP to reduce codec complexity
-           // let modifiedSDP = offer.sdp.split('\r\n').filter(line => !line.includes('H264')).join('\r\n');
-           // const newOffer = new RTCSessionDescription({
-           //     sdp: modifiedSDP,
-           //     type: offer.type
-           // });
-
-           // await pc.setLocalDescription(newOffer);
-
-            try {
-              await pc.setLocalDescription(offer); // set offer 
-            } catch (error) {
-                console.error('Error setting local description: ', error);
-            }
-
-            prettyPrintSDP(pc.localDescription.sdp);
-            const response = await fetch(signalingUrl, { // send the offer to establish connection
-                method: 'POST',
-                body: JSON.stringify({
-                    sdp: pc.localDescription.sdp,
-                    type: pc.localDescription.type,
-                }),
-                headers: { 'Content-Type': 'application/json' },
-            });
-
-            if(!response.ok) {
-              throw new Error('Network response was not ok')
-            }
-
-            const answer = await response.json(); // await answer from server
-            console.log('Answer received from backend: ', answer)
-            prettyPrintSDP(answer.sdp);
-          
-            await pc.setRemoteDescription(new RTCSessionDescription(answer)); // establish stream 
-            console.log('Local Description Set: ', pc.currentLocalDescription)
-
+            // Track connection state changes
             pc.onconnectionstatechange = () => {
-              console.log('Connection state changed:', pc.connectionState);
+                console.log('Connection State: ', pc.connectionState);
+                console.log('Current Local Description:', pc.currentLocalDescription);
+                console.log('Current Remote Description :', pc.currentRemoteDescription);
+                console.log('Signaling State:', pc.signalingState);
             };
+
+            // Track ICE connection state changes
+            pc.oniceconnectionstatechange = () => {
+                console.log('ICE Connection State:', pc.iceConnectionState);
+            };
+
+            addEventListener('icecandidaterror', (event) => {});
+            pc.onicecandidateerror = (event) => {
+                console.log('ICE candidate error:', event);
+          }
         }
 
+        // Start the WebRTC process
         startWebRTC();
     </script>
 </body>
