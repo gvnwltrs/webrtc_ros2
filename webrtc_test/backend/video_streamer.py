@@ -10,6 +10,7 @@ from aiortc import (
     RTCIceGatherer
 )
 from av import VideoFrame
+from PIL import Image
 import numpy as np
 import logging
 import re
@@ -42,13 +43,53 @@ gathered_ice_candiates_from_answer = {
     "status": "",
     "complete": False
 }
-
+'''
 class DummyVideoStreamTrack(VideoStreamTrack):
     async def recv(self):
         frame = np.zeros((480, 640, 3), dtype=np.uint8)
         frame[:, :, 2] = 255  # Red frame
         video_frame = VideoFrame.from_ndarray(frame, format="bgr24")
-        video_frame.pts, video_frame.time_base = self.next_timestamp()
+        timestamp = await self.next_timestamp()
+        video_frame.pts, video_frame.time_base = timestamp
+        return video_frame
+'''
+class DummyVideoStreamTrack(VideoStreamTrack):
+    def __init__(self, gif_path):
+        super().__init__()
+        self.gif_path = gif_path
+        self.frames = self._load_gif_frames()
+        self.frame_index = 0
+
+    def _load_gif_frames(self):
+        """
+        Load GIF and convert frames to numpy arrays.
+        """
+        gif = Image.open(self.gif_path)
+        frames = []
+        try:
+            while True:
+                frame = gif.copy().convert("RGB")
+                frames.append(np.array(frame))
+                gif.seek(gif.tell() + 1)
+        except EOFError:
+            pass  # End of GIF
+        return frames
+
+    async def recv(self):
+        """
+        Send a single frame from the GIF as a video frame.
+        """
+        # Get the next frame in the loop
+        frame = self.frames[self.frame_index]
+        self.frame_index = (self.frame_index + 1) % len(self.frames)  # Loop GIF
+
+        # Convert the frame to a VideoFrame object
+        video_frame = VideoFrame.from_ndarray(frame, format="rgb24")
+
+        # Set timestamp
+        timestamp = await self.next_timestamp()
+        video_frame.pts, video_frame.time_base = timestamp
+
         return video_frame
 
 # FIXME: consolidate these functions into one should be able to convert offer candidates  
@@ -120,7 +161,7 @@ async def signaling_client():
     global gathered_ice_candiates_from_answer
     async with aiohttp.ClientSession() as session:
         pc = RTCPeerConnection(config)
-        pc.addTrack(DummyVideoStreamTrack())
+        pc.addTrack(DummyVideoStreamTrack("cat.gif"))
 
         async def checker():
             if offer_answer_status['answer_sent']:

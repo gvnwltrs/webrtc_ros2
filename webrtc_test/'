@@ -1,0 +1,112 @@
+import asyncio
+import aiohttp
+from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from av import VideoFrame
+import numpy as np
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+offer_answer_status = {
+    "offer_received": False,
+    "answer_sent": False,
+    "response": {}
+}
+
+class DummyVideoStreamTrack(VideoStreamTrack):
+    async def recv(self):
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        frame[:, :, 2] = 255  # Red frame
+        video_frame = VideoFrame.from_ndarray(frame, format="bgr24")
+        video_frame.pts, video_frame.time_base = self.next_timestamp()
+        return video_frame
+
+def replace_mdns_with_loopback(candidate):
+    """
+    Replace .local mDNS hostname with a specific IP in the ICE candidate string.
+    """
+    if "candidate" in candidate and ".local" in candidate["candidate"]:
+        logger.info(f"Backend: Original mDNS Candidate: {candidate['candidate']}")
+        candidate["candidate"] = candidate["candidate"].replace(".local", "172.18.0.3")
+        logger.info(f"Backend: Modified Candidate: {candidate['candidate']}")
+    return candidate
+
+def filter_candidates(candidates):
+    """
+    Filters out server-reflexive (srflx) candidates and malformed ones.
+    """
+    valid_candidates = []
+    for candidate in candidates:
+        if "candidate" not in candidate:
+            logger.error(f"Backend: Malformed candidate: {candidate}")
+            continue
+        if "typ srflx" not in candidate["candidate"]:
+            logger.error(f"Backend: Storing valid candidate: {candidate}")
+            valid_candidates.append(candidate)
+        else:
+            logger.info(f"Backend: Filtered out srflx candidate: {candidate['candidate']}")
+    return valid_candidates
+
+async def signaling_client():
+    global offer_answer_status 
+    async with aiohttp.ClientSession() as session:
+        pc = RTCPeerConnection()
+        pc.addTrack(DummyVideoStreamTrack())
+
+        async def fetch_offer():
+            if not offer_answer_status['offer_received']:
+                response = await session.get("http://localhost:8080/backend/offer")
+                if response.status == 200:
+                    response = await response.json()
+                    #logger.info(f"Backend: Offer received from signaling server: {response}")
+                    logger.info(f"Backend: Offer received from signaling server.")
+                    offer_answer_status['offer_received'] = True
+                    offer_answer_status['response'] = response
+
+        async def send_answer():
+            if not offer_answer_status['answer_sent'] and offer_answer_status['offer_received']:
+                data = offer_answer_status['response']
+
+                if not data.get("ice_candidates"):
+                    logger.warning("Backend: No ICE candidates received in the offer.")
+                    return
+
+                logger.info(f"Backend: Raw ICE candidates from offer: {data['ice_candidates']}")
+                filtered_candidates = filter_candidates(data["ice_candidates"])
+                for candidate in filtered_candidates:
+                    modified_candidate = replace_mdns_with_loopback(candidate)
+                    try:
+                        await pc.addIceCandidate(modified_candidate)
+                        logger.info(f"Backend: Successfully added ICE candidate: {modified_candidate}")
+                    except Exception as e:
+                        logger.error(f"Backend: Error adding ICE candidate: {modified_candidate}, Exception: {e}")
+
+                offer = RTCSessionDescription(sdp=data["offer"]["sdp"], type=data["offer"]["type"])
+                #logger.info(f"Received Offer SDP:\n{offer.sdp}")
+                logger.info(f"Backend: Received Offer SDP.")
+                await pc.setRemoteDescription(offer)
+
+                answer = await pc.createAnswer()
+                #logger.info(f"Generated Answer SDP:\n{answer.sdp}")
+                logger.info(f"Backend: Generated Answer SDP.")
+                await pc.setLocalDescription(answer)
+
+                await session.post("http://localhost:8080/backend/answer", json={
+                    "answer": { "sdp": pc.localDescription.sdp, "type": pc.localDescription.type },
+                    "ice_candidates": []
+                })
+                logger.info("Backend: Answer sent to signaling server.")
+                offer_answer_status['answer_sent'] = True
+
+        while True:
+            try:
+                await fetch_offer()
+                await send_answer()
+            except Exception as e:
+                logger.error(f"Backend: Error fetching or sending data: {e}")
+            await asyncio.sleep(5)
+
+if __name__ == "__main__":
+    asyncio.run(signaling_client())
+

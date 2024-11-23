@@ -10,12 +10,17 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
+    iputils-ping \
     curl \
+    netcat-traditional \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install --no-cache-dir aiohttp aiortc aiohttp_cors numpy opencv-python
+RUN pip3 install --no-cache-dir aiohttp aiortc aiohttp_cors numpy opencv-python av zeroconf pillow
 
 COPY . .
 
-CMD ["python", "server.py"]
+#CMD ["python", "server.py"]
+#CMD python server.py & python video_streamer.py
+CMD ["python", "/app/video_streamer.py"]
+
 
