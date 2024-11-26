@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -22,39 +23,42 @@
           pc.ontrack
         */
 
-        const offerAnswerStatus = {
-            offerSent: false,
-            answerReceived: false,
-        };
-
+        // Connection Setup
         const configuration = {
-            "iceServers": [], // No STUN or TURN servers
+            "iceServers": [
+                { urls: "stun:172.20.0.3:3478"},
+            ],
             "iceTransportPolicy": "all"
         };
+        const pc = new RTCPeerConnection(configuration);
+        const signalingUrl = 'http://localhost:8080';
+        const videoElement = document.getElementById('remoteVideo');
+        const remoteIceCandidates = [];
+        const localIceCandidates = [];
 
-        const iceCandidates = [];
+        const offerAnswerStatus = {
+            offerReceived: false,
+            answerSent: false,
+        };
 
-        // Utility Functions
+        // Events 
+        pc.ontrack = (event) => {
+            if (event.streams && event.streams[0]) {
+                videoElement.srcObject = event.streams[0];
+            }
+        };
 
-        // FIXME: Broken 
-        function prettyPrintSDP(data, action) {
-          console.log(`--- DATA START --- `);
-          console.log(`--- TYPE: ${action} --- `);
-          if (action == "ice_candidates") {
-            console.log(data);
-          } else if (action == "sdp") {
-              data.split('\r\n').forEach((line) => {
-                  if (line.trim() !== '') {
-                      console.log(line);
-                  }
-              });
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+              localIceCandidates.push(event.candidate); 
           } else {
-            console.log("Invalid data access: Options are 'sdp' or 'ice_candidates'")
+              console.log("All ICE candidates have been gathered for answer.");
+              console.log(`ICE candidates: ${JSON.stringify(localIceCandidates)}`);
           }
-          console.log('--- DATA START ---');
         }
 
-        function waitForIceGatheringComplete(pc) {
+        // Helpers
+        async function waitForIceGatheringComplete(pc) {
             return new Promise((resolve) => {
                 if (pc.iceGatheringState === "complete") {
                     resolve();
@@ -68,47 +72,75 @@
                     pc.addEventListener("icegatheringstatechange", checkState);
                 }
             });
-        }
+        };
 
-        const pc = new RTCPeerConnection(configuration);
-        const signalingUrl = 'http://localhost:8080';
-        const videoElement = document.getElementById('remoteVideo');
-
-        // Handle incoming video stream
-        pc.ontrack = (event) => {
-            if (event.streams && event.streams[0]) {
-                videoElement.srcObject = event.streams[0];
+        async function processRemoteIceCandidates(pc, candidates) {
+            try {
+                for (const candidate of candidates) {
+                    console.log("Adding remote ICE candidate")
+                    await pc.addIceCandidate(
+                        new RTCIceCandidate({
+                          "candidate": candidate.candidate,
+                          "sdpMid": candidate.sdpMid || 0,
+                          "sdpMLineIndex": candidate.sdpMLineIndex || 0
+                    }));
+                }
+            } catch (error) {
+                console.log(`Error when adding candidate: ${error}`);
             }
         };
 
-        pc.onicecandidate = (event) => {
-          if (event.candidate) {
-              console.log(`Generated ICE Candidate: ${event.candidate}`);
-              console.log(`Generated ICE Candidate IP: ${event.candidate.candidate.split(" ")[4]}`);
-              iceCandidates.push(event.candidate); // Add the candidate to the list
-          } else {
-              console.log("All ICE candidates have been gathered for offer.");
-          }
-        }
+        // Signaling
+        async function getOffer() {
+            if (!offerAnswerStatus.offerReceived) {
+                try {
+                    console.log("Fetching offer now...")
+                    const response = await fetch(`${signalingUrl}/frontend/offer`);
+                    if (response.ok) {
+                      console.log("Getting offer now...")
+                      const data = await response.json();
 
-        async function sendOffer() {
-            if (!offerAnswerStatus.offerSent) {
-                pc.addTransceiver('video', { direction: 'recvonly' });
+                      console.log(`Data received: ${JSON.stringify(data)}`)
 
-                // Create the offer and set as local description
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
+                      const offer = data.offer;
+                      const remoteIceCandidates = data.ice_candidates;
 
-                // Wait for ICE gathering to complete
+                      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+                      console.log(`ICE Candidate(s) received: ${JSON.stringify(remoteIceCandidates)}`)
+                      processRemoteIceCandidates(pc, remoteIceCandidates);
+
+                      offerAnswerStatus.offerReceived = true;
+                      console.log(`Remote Description set for offer: ${offer}`)
+                  } else {
+                      console.log("Respose for offer: ", response)
+                      console.log("Offer not received from backend yet...")
+                  }
+                } catch (error) {
+                      console.error(`Error in getOffer: ${error}`)
+                }
+            }
+        };
+
+        async function sendAnswer() {
+            offerReceived = offerAnswerStatus.offerReceived;
+            answerSent = offerAnswerStatus.answerSent;
+            if (offerReceived && !answerSent) {
+                // Video Stresm
+                pc.addTransceiver('video', {direction: 'recvonly'});
+
+                // Create Answer
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(new RTCSessionDescription(answer));
                 await waitForIceGatheringComplete(pc);
 
-                // Send offer to signaling server
-                await fetch(`${signalingUrl}/frontend/offer`, {
+                // Send Answer
+                await fetch(`${signalingUrl}/frontend/answer`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        offer: { sdp: pc.localDescription.sdp, type: pc.localDescription.type },
-                        ice_candidates: iceCandidates.map(candidate => ({
+                        answer: { sdp: pc.localDescription.sdp, type: pc.localDescription.type },
+                        ice_candidates: localIceCandidates.map(candidate => ({
                             candidate: candidate.candidate,
                             sdpMid: candidate.sdpMid,
                             sdpMLineIndex: candidate.sdpMLineIndex
@@ -116,75 +148,28 @@
                     })
                 });
 
-                console.log(`Frontend: Offer sent to signaling server.`);
-                offerAnswerStatus.offerSent = true;
+                offerAnswerStatus.answerSent = true;
+
             }
-           // TODO: return??
-        }
-
-        async function getAnswer() {
-            console.log("RemoteCandidate: ", pc.iceGatheringState)
-            if (!offerAnswerStatus.answerReceived) {
-                const response = await fetch(`${signalingUrl}/frontend/answer`);
-                if (response.ok) {
-                    const data = await response.json();
-                    console.log(`Frontend: Answer received: ${data.answer}`);
-
-                    // Set the remote description with the received answer
-                    await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-                    console.log(`Frontend: RemoteDescription added answer`);
-
-                    
-                    // FIXME: Create a loop to add all remote candidates
-                    await pc.addIceCandidate(new RTCIceCandidate(data.ice_candidates[0]));
-                    console.log(`Frontend: Added ICE candidate: ${data.ice_candidates[0]}`);
-
-                    offerAnswerStatus.answerReceived = true;
-                } else {
-                    console.log("Frontend: No answer available yet.");
-                }
-            }
-            //TODO: return ??
         }
 
         async function startWebRTC() {
-            // TODO: Add conditional here to stop running this upon getting the answer back from peer.
-            await sendOffer();
-            await getAnswer();
+            await getOffer();
+            await sendAnswer();
 
             // Periodically check for an answer if not yet received
-            const answerCheckInterval = setInterval(async () => {
-                if (!offerAnswerStatus.answerReceived) {
-                    await getAnswer();
+            const offerCheckInterval = setInterval(async () => {
+                if (!offerAnswerStatus.offerReceived) {
+                    await getOffer();
                 } else {
-                    clearInterval(answerCheckInterval);
+                    clearInterval(offerCheckInterval);
                 }
             }, 5000);
-
-            // TODO: On what state should I set remote and ice_candidates from remote???
-
-            // Track connection state changes
-            pc.onconnectionstatechange = () => {
-                console.log('Connection State: ', pc.connectionState);
-                console.log('Current Local Description:', pc.currentLocalDescription);
-                console.log('Current Remote Description :', pc.currentRemoteDescription);
-                console.log('Signaling State:', pc.signalingState);
-            };
-
-            // Track ICE connection state changes
-            pc.oniceconnectionstatechange = () => {
-                console.log('ICE Connection State:', pc.iceConnectionState);
-            };
-
-            addEventListener('icecandidaterror', (event) => {});
-            pc.onicecandidateerror = (event) => {
-                console.log('ICE candidate error:', event);
-          }
         }
 
         // Start the WebRTC process
         startWebRTC();
+
     </script>
 </body>
 </html>
-

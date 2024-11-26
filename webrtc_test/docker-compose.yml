@@ -4,8 +4,12 @@ services:
     build: ./frontend
     ports:
       - "3000:3000"  # Maps to localhost:3000
+      - "3478:3478/udp"
+      - "3478:3478/tcp"
     depends_on:
       - backend
+    networks:
+      - webrtc-network
 
   backend:
     build: ./backend
@@ -13,4 +17,10 @@ services:
       - "8080:8080"  # Maps to localhost:8080
     command: >
       sh -c "python /app/signaling_server.py & python /app/video_streamer.py"
+    networks:
+    - webrtc-network
+
+networks:
+  webrtc-network:
+    driver: bridge
 
