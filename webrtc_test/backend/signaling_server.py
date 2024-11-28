@@ -12,6 +12,7 @@ offer_answer_status = {
     "offer_sent": False,
     "answer_received": False,
     "answer_sent": False,
+    "auth_sent": False,
 }
 
 state = {
@@ -19,7 +20,9 @@ state = {
     "backend_ice_candidates": [],
     "frontend_answer": None,
     "frontend_ice_candidates": [],
-    "trickled_candidates": {"backend": [], "frontend": []}
+    "trickled_candidates": {"backend": [], "frontend": []},
+    "username": None,
+    "password": None,
 }
 
 # <ACTION>: CORS handling middleware
@@ -134,6 +137,23 @@ async def forward_trickled_candidate(target, candidate):
         logger.error(f"Error forwarding candidate to {target}: {e}")
         traceback.print_exc()
 
+async def handle_auth(request):
+    data = await request.json()
+    state["username"] = data.get("username")
+    state["password"] = data.get("password")
+    return web.Response(status=200, text="Auth handled.")
+
+async def forward_auth(request):
+    if not offer_answer_status['auth_sent']:
+        response = {
+            "username": state["username"],
+            "password": state["password"]
+        }
+        logger.info(f"Signaling Server: Sending Auth: {response}")
+        offer_answer_status['auth_sent'] = True
+        return web.json_response(response)
+    return web.Response(status=404, text="No Auth available")
+
 app = web.Application(middlewares=[cors_middleware])
 app.router.add_options('/{tail:.*}', handle_preflight)
 
@@ -142,6 +162,8 @@ app.router.add_get("/frontend/offer", send_offer_to_frontend) # frontend req
 app.router.add_post("/frontend/answer", handle_answer) # frontend req
 app.router.add_get("/backend/answer", send_answer_to_backend) # backend req
 app.router.add_post("/trickle", handle_trickle)
+app.router.add_post("/backend/auth", handle_auth)
+app.router.add_get("/frontend/auth", forward_auth)
 
 #web.run_app(app, host="10.0.0.20", port=8080)
 web.run_app(app, port=8080)

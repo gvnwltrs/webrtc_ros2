@@ -1,7 +1,9 @@
 #!/bin/bash
 
 # Start TURN server
-turnserver --no-auth --listening-port 3478 --realm webrtc.local --cli-password=12345 external-ip=10.0.0.67 \
+# turnserver --no-auth --listening-port 3478 --realm webrtc.local --cli-password=12345 external-ip=10.0.0.67 \
+#   relay-ip=10.0.0.67 --verbose &
+turnserver --static-auth-secret=password --listening-port 3478 --realm webrtc.local external-ip=10.0.0.67 \
   relay-ip=10.0.0.67 --verbose &
 
 wait

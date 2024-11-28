@@ -17,13 +17,22 @@ import logging
 import re
 import traceback
 
+import hmac
+import hashlib
+import base64
+from datetime import datetime, timedelta
+
+shared_secret = "password"
+username = str(int((datetime.utcnow() + timedelta(minutes=10)).timestamp()))
+password = base64.b64encode(hmac.new(shared_secret.encode(), username.encode(), hashlib.sha1).digest()).decode()
+
 logging.basicConfig(level=logging.INFO) # NOTE: Options: [INFO, WARNING, ERROR, CRITICAL (use if you don't want spam)] 
 logger = logging.getLogger(__name__)
 
 no_server = RTCIceServer(urls=[])
 stun_server = RTCIceServer(urls=["stun:10.0.0.67:3478"])
 # turn_server = RTCIceServer(urls=["turn:172.20.0.2:3478"], username="dummy")
-turn_server = RTCIceServer(urls=["turn:10.0.0.67:3478"], username="dummy")
+turn_server = RTCIceServer(urls=["turn:10.0.0.67:3478"], username=username, credential=password)
 config = RTCConfiguration(
     iceServers=[stun_server, turn_server]
 )
@@ -84,13 +93,14 @@ async def signaling_client():
     global config
     global offer_answer_status
     global gathered_ice_candiates_from_answer
+    global username, password
     backend_ice_candidates = []
 
     async with aiohttp.ClientSession() as session:
         #signalingUrl ="http://10.0.0.20:8080"
         signalingUrl ="http://localhost:8080"
         pc = RTCPeerConnection(config)
-        pc.addTrack(DummyVideoStreamTrack("cat.gif"))
+        pc.addTrack(DummyVideoStreamTrack("breakstuff.gif"))
 
         # Events
         # Store ICE Canddidates when generated
@@ -211,10 +221,17 @@ async def signaling_client():
                 candidates = get_generated_ice_candidates(pc)
                 candidates = format_ice_candidates(candidates)
                 backend_ice_candidates = pkg_candidates(candidates)
+                response = await session.post(f"{signalingUrl}/backend/auth", json={
+                        "username": username,
+                        "password": password
+                });
+                logger.info(f"Backend: Auth sent: {response}")
                 response = await session.post(f"{signalingUrl}/backend/offer", json={
                     "offer": {
                         "sdp": pc.localDescription.sdp,
-                        "type": pc.localDescription.type
+                        "type": pc.localDescription.type,
+                        "username": username,
+                        "password": password
                     },
                     "ice_candidates": backend_ice_candidates
                 });

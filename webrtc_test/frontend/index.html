@@ -8,7 +8,7 @@
 </head>
 <body>
     <h1>WebRTC Video Stream Test</h1>
-    <video id="remoteVideo" autoplay playsinline></video>
+    <video id="remoteVideo" autoplay playsinline muted></video>
     <script>
         /*
           states to watch:
@@ -23,139 +23,176 @@
           pc.ontrack
         */
 
-        // Connection Setup
-        const stunServer = {urls: "stun:10.0.0.67:3478"};
-        const turnServer = {urls: "turn:10.0.0.67:3478", username: "dummy", credential: "dummy"};
-        const configuration = {
-            "iceServers": [stunServer, turnServer],
-            "iceTransportPolicy": "relay"
-        };
-        console.log(`ICE configured for: ${configuration}`)
-        const pc = new RTCPeerConnection(configuration);
         const signalingUrl = 'http://localhost:8080';
-        //const signalingUrl = 'http://10.0.0.20:8080';
-        const videoElement = document.getElementById('remoteVideo');
-        const remoteIceCandidates = [];
-        const localIceCandidates = [];
+        let username = null;
+        let password = null;
+        let auth_received = false;
 
-        const offerAnswerStatus = {
-            offerReceived: false,
-            answerSent: false,
-        };
+        function sleep(ms) {
+          return new Promise(resolve => setTimeout(resolve, ms));
+        }
 
-        // Events 
-        pc.ontrack = (event) => {
-            if (event.streams && event.streams[0]) {
-                videoElement.srcObject = event.streams[0];
+        async function getAuth() {
+          try{
+            console.log(`Checking for Auth...`);
+            const response = await fetch(`${signalingUrl}/frontend/auth`);
+            console.log(`Auth status[${response.status}]`);
+            if (response.ok) {
+              const data = await response.json();
+              username = data.username;
+              password = data.password;
+              auth_received = true;
+            } else if (response.status == 500){
+              console.log(`Did not get Auth...`);
+              auth_received = true;
             }
-        };
-
-        pc.onicecandidate = (event) => {
-          if (event.candidate) {
-              localIceCandidates.push(event.candidate); 
-          } else {
-              console.log("All ICE candidates have been gathered for answer.");
-              console.log(`ICE candidates: ${JSON.stringify(localIceCandidates)}`);
+          } catch (error) {
+            console.log(`Error for Auth: ${error}`)
           }
         }
 
-        // Helpers
-        async function waitForIceGatheringComplete(pc) {
-            return new Promise((resolve) => {
-                if (pc.iceGatheringState === "complete") {
-                    resolve();
-                } else {
-                    const checkState = () => {
-                        if (pc.iceGatheringState === "complete") {
-                            pc.removeEventListener("icegatheringstatechange", checkState);
-                            resolve();
-                        }
-                    };
-                    pc.addEventListener("icegatheringstatechange", checkState);
-                }
-            });
-        };
-
-        async function processRemoteIceCandidates(pc, candidates) {
-            try {
-                for (const candidate of candidates) {
-                    console.log("Adding remote ICE candidate")
-                    await pc.addIceCandidate(
-                        new RTCIceCandidate({
-                          "candidate": candidate.candidate,
-                          "sdpMid": candidate.sdpMid || 0,
-                          "sdpMLineIndex": candidate.sdpMLineIndex || 0
-                    }));
-                }
-            } catch (error) {
-                console.log(`Error when adding candidate: ${error}`);
+        async function waitForAuth() {
+          while (!auth_received) {
+            console.log(`Checking for Auth...`);
+            await getAuth();
+            if (!auth_received) {
+              await sleep(5000);
             }
-        };
-
-        // Signaling
-        async function getOffer() {
-            if (!offerAnswerStatus.offerReceived) {
-                try {
-                    console.log("Fetching offer now...")
-                    const response = await fetch(`${signalingUrl}/frontend/offer`);
-                    if (response.ok) {
-                      console.log("Getting offer now...")
-                      const data = await response.json();
-
-                      console.log(`Data received: ${JSON.stringify(data)}`)
-
-                      const offer = data.offer;
-                      const remoteIceCandidates = data.ice_candidates;
-
-                      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-
-                      console.log(`ICE Candidate(s) received: ${JSON.stringify(remoteIceCandidates)}`)
-                      processRemoteIceCandidates(pc, remoteIceCandidates);
-
-                      offerAnswerStatus.offerReceived = true;
-                      console.log(`Remote Description set for offer: ${offer}`)
-                  } else {
-                      console.log("Respose for offer: ", response)
-                      console.log("Offer not received from backend yet...")
-                  }
-                } catch (error) {
-                      console.error(`Error in getOffer: ${error}`)
-                }
-            }
-        };
-
-        async function sendAnswer() {
-            offerReceived = offerAnswerStatus.offerReceived;
-            answerSent = offerAnswerStatus.answerSent;
-            if (offerReceived && !answerSent) {
-                // Video Stresm
-                pc.addTransceiver('video', {direction: 'recvonly'});
-
-                // Create Answer
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(new RTCSessionDescription(answer));
-                await waitForIceGatheringComplete(pc);
-
-                // Send Answer
-                await fetch(`${signalingUrl}/frontend/answer`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        answer: { sdp: pc.localDescription.sdp, type: pc.localDescription.type },
-                        ice_candidates: localIceCandidates.map(candidate => ({
-                            candidate: candidate.candidate,
-                            sdpMid: candidate.sdpMid,
-                            sdpMLineIndex: candidate.sdpMLineIndex
-                        }))
-                    })
-                });
-
-                offerAnswerStatus.answerSent = true;
-
-            }
+          }
         }
 
-        async function startWebRTC() {
+        async function startWebRTC() { 
+          const stunServer = {urls: "stun:10.0.0.67:3478"};
+          const turnServer = {urls: "turn:10.0.0.67:3478", username: username, credential: password};
+          const configuration = {
+              "iceServers": [stunServer, turnServer],
+              "iceTransportPolicy": "relay"
+          };
+          console.log(`ICE configured for: ${configuration}`)
+          const pc = new RTCPeerConnection(configuration);
+          // Video Stresm
+          pc.addTransceiver('video', {direction: 'recvonly'});
+          //const signalingUrl = 'http://10.0.0.20:8080';
+          const videoElement = document.getElementById('remoteVideo');
+          const remoteIceCandidates = [];
+          const localIceCandidates = [];
+
+          const offerAnswerStatus = {
+              offerReceived: false,
+              answerSent: false,
+          };
+
+          // Events 
+          pc.ontrack = (event) => {
+              if (event.streams && event.streams[0]) {
+                  videoElement.srcObject = event.streams[0];
+              }
+          };
+
+          pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                localIceCandidates.push(event.candidate); 
+            } else {
+                console.log("All ICE candidates have been gathered for answer.");
+                console.log(`ICE candidates: ${JSON.stringify(localIceCandidates)}`);
+            }
+          }
+
+          // Helpers
+          async function waitForIceGatheringComplete(pc) {
+              return new Promise((resolve) => {
+                  if (pc.iceGatheringState === "complete") {
+                      resolve();
+                  } else {
+                      const checkState = () => {
+                          if (pc.iceGatheringState === "complete") {
+                              pc.removeEventListener("icegatheringstatechange", checkState);
+                              resolve();
+                          }
+                      };
+                      pc.addEventListener("icegatheringstatechange", checkState);
+                  }
+              });
+          };
+
+          async function processRemoteIceCandidates(pc, candidates) {
+              try {
+                  for (const candidate of candidates) {
+                      console.log("Adding remote ICE candidate")
+                      await pc.addIceCandidate(
+                          new RTCIceCandidate({
+                            "candidate": candidate.candidate,
+                            "sdpMid": candidate.sdpMid || 0,
+                            "sdpMLineIndex": candidate.sdpMLineIndex || 0
+                      }));
+                  }
+              } catch (error) {
+                  console.log(`Error when adding candidate: ${error}`);
+              }
+          };
+
+          // Signaling
+          async function getOffer() {
+              if (!offerAnswerStatus.offerReceived) {
+                  try {
+                      console.log("Fetching offer now...")
+                      const response = await fetch(`${signalingUrl}/frontend/offer`);
+                      if (response.ok) {
+                        console.log("Getting offer now...")
+                        const data = await response.json();
+
+                        console.log(`Data received: ${JSON.stringify(data)}`)
+
+                        const offer = data.offer;
+                        const remoteIceCandidates = data.ice_candidates;
+                        username = data.username;
+                        password = data.password;
+
+                        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+                        console.log(`ICE Candidate(s) received: ${JSON.stringify(remoteIceCandidates)}`)
+                        processRemoteIceCandidates(pc, remoteIceCandidates);
+
+                        offerAnswerStatus.offerReceived = true;
+                        console.log(`Remote Description set for offer: ${offer}`)
+                    } else {
+                        console.log("Respose for offer: ", response)
+                        console.log("Offer not received from backend yet...")
+                    }
+                  } catch (error) {
+                        console.error(`Error in getOffer: ${error}`)
+                  }
+              }
+          };
+
+          async function sendAnswer() {
+              offerReceived = offerAnswerStatus.offerReceived;
+              answerSent = offerAnswerStatus.answerSent;
+              if (offerReceived && !answerSent) {
+
+                  // Create Answer
+                  const answer = await pc.createAnswer();
+                  await pc.setLocalDescription(new RTCSessionDescription(answer));
+                  await waitForIceGatheringComplete(pc);
+
+                  // Send Answer
+                  await fetch(`${signalingUrl}/frontend/answer`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                          answer: { sdp: pc.localDescription.sdp, type: pc.localDescription.type },
+                          ice_candidates: localIceCandidates.map(candidate => ({
+                              candidate: candidate.candidate,
+                              sdpMid: candidate.sdpMid,
+                              sdpMLineIndex: candidate.sdpMLineIndex
+                          }))
+                      })
+                  });
+
+                  offerAnswerStatus.answerSent = true;
+
+              }
+          }
             await getOffer();
             await sendAnswer();
 
@@ -167,10 +204,15 @@
                     clearInterval(offerCheckInterval);
                 }
             }, 5000);
-        }
+        };
 
-        // Start the WebRTC process
-        startWebRTC();
+        (async function main() {
+            // Wait for authentication
+            await waitForAuth();
+
+            // Start WebRTC logic after authentication
+            await startWebRTC();
+        })();
 
     </script>
 </body>
