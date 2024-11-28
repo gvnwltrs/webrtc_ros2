@@ -24,14 +24,16 @@
         */
 
         // Connection Setup
+        const stunServer = {urls: "stun:10.0.0.67:3478"};
+        const turnServer = {urls: "turn:10.0.0.67:3478", username: "dummy", credential: "dummy"};
         const configuration = {
-            "iceServers": [
-                { urls: "stun:172.20.0.3:3478"},
-            ],
-            "iceTransportPolicy": "all"
+            "iceServers": [stunServer, turnServer],
+            "iceTransportPolicy": "relay"
         };
+        console.log(`ICE configured for: ${configuration}`)
         const pc = new RTCPeerConnection(configuration);
         const signalingUrl = 'http://localhost:8080';
+        //const signalingUrl = 'http://10.0.0.20:8080';
         const videoElement = document.getElementById('remoteVideo');
         const remoteIceCandidates = [];
         const localIceCandidates = [];

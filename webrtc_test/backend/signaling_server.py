@@ -2,6 +2,7 @@ from aiohttp import web
 from aiohttp.web import Response
 import logging
 import json
+import traceback
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -142,5 +143,6 @@ app.router.add_post("/frontend/answer", handle_answer) # frontend req
 app.router.add_get("/backend/answer", send_answer_to_backend) # backend req
 app.router.add_post("/trickle", handle_trickle)
 
-web.run_app(app, host="0.0.0.0", port=8080)
+#web.run_app(app, host="10.0.0.20", port=8080)
+web.run_app(app, port=8080)
 

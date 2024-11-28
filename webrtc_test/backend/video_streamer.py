@@ -20,10 +20,14 @@ import traceback
 logging.basicConfig(level=logging.INFO) # NOTE: Options: [INFO, WARNING, ERROR, CRITICAL (use if you don't want spam)] 
 logger = logging.getLogger(__name__)
 
-stun_server = RTCIceServer(urls=["stun:172.20.0.3:3478"])
+no_server = RTCIceServer(urls=[])
+stun_server = RTCIceServer(urls=["stun:10.0.0.67:3478"])
+# turn_server = RTCIceServer(urls=["turn:172.20.0.2:3478"], username="dummy")
+turn_server = RTCIceServer(urls=["turn:10.0.0.67:3478"], username="dummy")
 config = RTCConfiguration(
-    iceServers=[stun_server]
+    iceServers=[stun_server, turn_server]
 )
+logger.info(f"Backend: ICE configured for: {config}")
 
 offer_answer_status = {
     "offer_sent": False,
@@ -83,6 +87,8 @@ async def signaling_client():
     backend_ice_candidates = []
 
     async with aiohttp.ClientSession() as session:
+        #signalingUrl ="http://10.0.0.20:8080"
+        signalingUrl ="http://localhost:8080"
         pc = RTCPeerConnection(config)
         pc.addTrack(DummyVideoStreamTrack("cat.gif"))
 
@@ -95,6 +101,15 @@ async def signaling_client():
             if pc.iceGatheringState == "complete":
                 ice_complete.set()
 
+        # FIXME: Trickle setup (aiortc issue #499)
+        # @pc.on('icegatheringstatechange')
+        # def on_icegatheringstatechange():
+        #     logging.info('iceGatheringState changed to {}'.format(self.pc.iceGatheringState))
+        #     if self.pc.iceGatheringState == 'complete':
+        #         # candidates are ready
+        #         candidates = self.pc.sctp.transport.transport.iceGatherer.getLocalCandidates()
+        #         #add ice candidate iteratively
+
         # Helpers
         async def wait_for_ice_completion(pc):
             """Wait for ICE gathering to complete."""
@@ -102,6 +117,14 @@ async def signaling_client():
             while pc.iceGatheringState != "complete":
                 await asyncio.sleep(0.1)
             print("ICE gathering complete")
+
+        async def send_ice_candidates(session, candidates):
+            logger.info(f"Backend: Trickle ICE Candidates starting...")
+            for candidate in candidates:
+                if candidate:
+                    response = await session.post(f"{signalingUrl}/trickle", json={"candidate":candidate});
+                    logger.info(f"Backend: Trickle ICE Candidates sent! Response[{response.status}]")
+            # response = await session.post(f"{signalingUrl}/trickle", json={candidates});
 
         def get_generated_ice_candidates(pc) -> list:
             logger.info(f"Backend: Getting generated ICE Candidates ...")
@@ -164,6 +187,12 @@ async def signaling_client():
                 logger.error(f"Backend: Error parsing candidate string: {e}")
                 traceback.print_exc()
 
+        def pkg_candidates(candidates) -> list:
+            return [
+                    convert_ice_candidates_to_send_or_receive(candidate, "send")
+                    for candidate in candidates
+                ]
+
         async def set_remote_ice_candidates(pc, candidates):
             for candidate in candidates:
                 await pc.addIceCandidate(candidate)
@@ -181,25 +210,22 @@ async def signaling_client():
 
                 candidates = get_generated_ice_candidates(pc)
                 candidates = format_ice_candidates(candidates)
-                backend_ice_candidates = [
-                    convert_ice_candidates_to_send_or_receive(candidate, "send")
-                    for candidate in candidates
-                ]
-
-                response = await session.post("http://localhost:8080/backend/offer", json={
+                backend_ice_candidates = pkg_candidates(candidates)
+                response = await session.post(f"{signalingUrl}/backend/offer", json={
                     "offer": {
                         "sdp": pc.localDescription.sdp,
                         "type": pc.localDescription.type
                     },
                     "ice_candidates": backend_ice_candidates
                 });
+                #await send_ice_candidates(session, backend_ice_candidates)
 
                 logger.info(f"Backend: Offer sent: {response}")
                 offer_answer_status['offer_sent'] = True
 
         async def get_answer():
             if offer_answer_status['offer_sent'] and not offer_answer_status['answer_received']:
-                response = await session.get("http://localhost:8080/backend/answer")
+                response = await session.get(f"{signalingUrl}/backend/answer")
                 if response.status == 200:
                     remote_ice_candidates = []
                     response = await response.json()
