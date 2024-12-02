@@ -5,7 +5,7 @@ This is meant to be a light weight solution for standing up your own WebRTC serv
 
 ## Current Status (11-22-2024)
 - Test setup is working for both MacOS and Linux docker container environments. 
-- Added features to support mDNS while running and communicating with frontend and backend containers 
+- Added features to support resolving mDNS IPs from a browser on the host system while running and communicating with frontend and backend containers 
 - Needs some refinement in the test setup, but it does at least provide a path for how to setup for ROS2 data streaming 
 
 ## How to Use
